@@ -344,25 +344,45 @@ T1:CreateButton({ Name = "STOP build", Callback = function() STOP = true end })
 
 -- ------------------- TAB: CUSTOM OBJ ------------------------
 local T2 = Win:CreateTab("Custom OBJ", 4483345998)
-T2:CreateSection("Model input")
+T2:CreateSection("1. Load a model")
 
 local objText = ""
-T2:CreateInput({ Name = "Paste OBJ text (small models)",
-    PlaceholderText = "v 0 1 0  ...  f 1 2 3",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(t) objText = t end })
+local urlInput, pasteInput = "", ""
 
-T2:CreateButton({ Name = "Load from getgenv().OBJ_DATA (big models)", Callback = function()
-    local d = getgenv().OBJ_DATA
-    if d and #d > 10 then
-        objText = d
-        Rayfield:Notify({ Title = "OBJ", Content = "Loaded " .. #d .. " chars from OBJ_DATA", Duration = 4 })
-    else
-        Rayfield:Notify({ Title = "OBJ", Content = "Run: getgenv().OBJ_DATA = [[ ...obj text... ]] first", Duration = 6 })
+T2:CreateInput({ Name = "Model URL (raw.githubusercontent link)",
+    PlaceholderText = "https://raw.githubusercontent.com/.../model.obj",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(t) urlInput = t end })
+
+T2:CreateInput({ Name = "...or paste OBJ text (small models)",
+    PlaceholderText = "v 0 1 0 ... f 1 2 3",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(t) pasteInput = t end })
+
+T2:CreateButton({ Name = "LOAD MODEL", Callback = function()
+    if #urlInput > 10 then
+        local ok, data = pcall(function() return game:HttpGet(urlInput) end)
+        if not ok or type(data) ~= "string" or #data < 10 then
+            Rayfield:Notify({ Title = "Fetch failed", Content = "Check URL - repo must be public", Duration = 6 }) return
+        end
+        if data:find("<!DOCTYPE html>") or data:find("<html") then
+            Rayfield:Notify({ Title = "That's a webpage", Content = "Use the RAW url (raw.githubusercontent.com)", Duration = 6 }) return
+        end
+        objText = data
+        Rayfield:Notify({ Title = "Model loaded", Content = "From URL - " .. #data .. " chars", Duration = 4 }) return
     end
+    if getgenv().OBJ_DATA and #getgenv().OBJ_DATA > 10 then
+        objText = getgenv().OBJ_DATA
+        Rayfield:Notify({ Title = "Model loaded", Content = "OBJ_DATA - " .. #objText .. " chars", Duration = 4 }) return
+    end
+    if #pasteInput > 10 then
+        objText = pasteInput
+        Rayfield:Notify({ Title = "Model loaded", Content = "Pasted text - " .. #objText .. " chars", Duration = 4 }) return
+    end
+    Rayfield:Notify({ Title = "Nothing to load", Content = "Give a URL, run OBJ_DATA, or paste text", Duration = 5 })
 end })
 
-T2:CreateSection("Shape settings")
+T2:CreateSection("2. Shape settings")
 
 local cell, fit, objY, colorMode = 2, 30, 0, "Gray"
 T2:CreateSlider({ Name = "Block size (studs)", Range = { 1, 4 }, Increment = 0.5,
@@ -374,15 +394,13 @@ T2:CreateSlider({ Name = "Height offset", Range = { -10, 10 }, Increment = 1,
 T2:CreateDropdown({ Name = "Color mode", Options = { "Gray", "Height Fade", "White" },
     CurrentOption = "Gray", Callback = function(v) colorMode = firstOf(v) end })
 T2:CreateDropdown({ Name = "Material", Options = { "TitaniumBlock", "WoodBlock" },
-    CurrentOption = "TitaniumBlock", Callback = function(v)
-        getgenv()._objMat = firstOf(v)
-    end })
+    CurrentOption = "TitaniumBlock", Callback = function(v) getgenv()._objMat = firstOf(v) end })
 
-T2:CreateSection("Actions")
+T2:CreateSection("3. Actions")
 
 T2:CreateButton({ Name = "PARSE & PREVIEW (check counts first!)", Callback = function()
     if #objText < 10 then
-        Rayfield:Notify({ Title = "OBJ", Content = "No OBJ text loaded", Duration = 4 }) return
+        Rayfield:Notify({ Title = "OBJ", Content = "Load a model first", Duration = 4 }) return
     end
     local ok, verts, faces, vox = pcall(function()
         local vv, ff = parseOBJ(objText)
@@ -404,6 +422,9 @@ end })
 
 T2:CreateButton({ Name = "BUILD FROM OBJ", Callback = function()
     if BUILDING then Rayfield:Notify({ Title = "Busy", Content = "A build is already running", Duration = 3 }) return end
+    if #objText < 10 then
+        Rayfield:Notify({ Title = "OBJ", Content = "Load a model first", Duration = 4 }) return
+    end
     local ok, jobsOrErr = pcall(function()
         local vv, ff = parseOBJ(objText)
         local vox = voxelize(vv, ff, cell, fit)
@@ -414,7 +435,7 @@ T2:CreateButton({ Name = "BUILD FROM OBJ", Callback = function()
         Rayfield:Notify({ Title = "OBJ error", Content = tostring(jobsOrErr), Duration = 6 }) return
     end
     Rayfield:Notify({ Title = "OBJ build",
-        Content = #jobsOrErr .. " blocks - this will take a while, stay on plot!", Duration = 6 })
+        Content = #jobsOrErr .. " blocks - stay on plot!", Duration = 6 })
     task.spawn(function()
         local ok2, msg = runBuild(jobsOrErr, { material = getgenv()._objMat or "TitaniumBlock" })
         Rayfield:Notify({ Title = "OBJ build",
