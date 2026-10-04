@@ -577,7 +577,7 @@ T2:CreateButton({ Name = "BUILD FROM OBJ", Callback = function()
             minArea = minArea, thick = thick, offsetY = objY, colorMode = colorMode })
     end)
     if not ok then notify("OBJ error", tostring(jobs), 6) return end
-    jobs = jobs[1]
+    
     if #jobs > CONFIG.MaxVoxels then
         notify("Too many", #jobs .. " > cap " .. CONFIG.MaxVoxels, 6) return
     end
