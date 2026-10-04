@@ -583,4 +583,4 @@ end)
 
 if not RUN_OK then
     warn("[Architect FATAL] " .. tostring(RUN_ERR))
-end0
+end
