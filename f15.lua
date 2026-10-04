@@ -1,12 +1,13 @@
 -- ════════════════════════════════════════════════════════════
---  BABFT OBJ ARCHITECT v7.4 — FINAL
+--  BABFT OBJ ARCHITECT v7.5 — FINAL TUNED EDITION
 --  ────────────────────────────────────────────────────────────
---  • CLOSED-LOOP budget solver: generates, MEASURES, re-solves.
---    The block count you set is the count you get (<= 4 passes)
---  • Decimator: micro-triangles cluster into shared plates
---  • Exact rasterization for real triangles, barycentric-culled
---  • Burst engine, dual-axis rotation verify + auto-fix
---  • Chunked paint, STOP, DeleteTool cleanup, respawn-safe calls
+--  • CLOSED-LOOP budget solver: builds, measures, re-solves
+--    until the real count fits (<= 4 passes)
+--  • Decimator Tier 2 with TUNABLE tightness (cluster slider)
+--  • Lower rasterization threshold: more true-angle plates,
+--    less averaged clustering = smoother builds
+--  • Exact rasterization (barycentric cull) + dual-axis verify
+--  • Burst engine, chunked paint, STOP, DeleteTool cleanup
 -- ════════════════════════════════════════════════════════════
 
 local RUN_OK, RUN_ERR = pcall(function()
@@ -14,7 +15,7 @@ local RUN_OK, RUN_ERR = pcall(function()
 local Players = game:GetService("Players")
 local P = Players.LocalPlayer
 
-print("[v7.4] loading...")
+print("[v7.5] loading...")
 
 local CONFIG = {
     BlockIDs   = { WoodBlock = 450, TitaniumBlock = 12272 },
@@ -256,12 +257,13 @@ local function normalize(verts, fit)
     return nv
 end
 
--- ═════ CLOSED-LOOP BUDGET SOLVER + DECIMATOR (v7.4) ═════════
--- Generates, MEASURES the real plate count, re-solves the cell,
--- regenerates. Converges to <= budget in <= 4 passes.
+-- ═══ CLOSED-LOOP BUDGET SOLVER + TUNED DECIMATOR (v7.5) ═════
+-- Tier 1 threshold: cell^2 * 0.15 (3x wider door than v7.4)
+-- Cluster neighborhood: cell * clusterAggr (default 0.9, tunable)
 local function triPlates(verts, faces, opts)
     local nv = normalize(verts, opts.fit)
     local budget = opts.budget or 10000
+    local clusterAggr = opts.clusterAggr or 0.9
 
     local totalArea = 0
     local triCount = 0
@@ -287,12 +289,12 @@ local function triPlates(verts, faces, opts)
     for pass = 1, 4 do
         plates = {}
         clusterCount = 0
-        local CLUSTER_CELL = cell * 1.5
+        local CLUSTER_CELL = cell * clusterAggr
         local grid = {}
 
         for _, t in ipairs(triList) do
             local triArea = t.cr.Magnitude / 2
-            if triArea >= cell * cell * 0.5 then
+            if triArea >= cell * cell * 0.15 then
                 local n = t.cr.Unit
                 local right = t.e1.Unit
                 local up = n:Cross(right).Unit
@@ -442,6 +444,7 @@ local function genJobs(text, o)
         fit = o.fit or 60,
         budget = o.budget or 10000,
         thick = o.thick or 0.6,
+        clusterAggr = o.clusterAggr or 0.9,
     })
     local jobs = triJobs(plates, o.offsetY or 0, o.colorMode or "Shaded")
     return jobs, {
@@ -465,7 +468,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Win = Rayfield:CreateWindow({
     Name = "BABFT OBJ Architect",
     LoadingTitle = "BABFT OBJ Architect",
-    LoadingSubtitle = "v7.4 FINAL | closed-loop 10k",
+    LoadingSubtitle = "v7.5 FINAL | tuned clusters, closed loop",
     ConfigurationSaving = { Enabled = false },
 })
 
@@ -511,11 +514,13 @@ end })
 T:CreateSection("2. Budget & shape")
 local budget, fit, thick, colorMode = 10000, 60, 0.6, "Shaded"
 local material, burst, burstWait, verifyOn = "TitaniumBlock", 20, 0.1, true
-local offsetY = 0
+local offsetY, clusterAggr = 0, 0.9
 T:CreateSlider({ Name = "BLOCK BUDGET (solver target)", Range = { 500, 12000 }, Increment = 500,
     CurrentValue = 10000, Callback = function(v) budget = v end })
 T:CreateSlider({ Name = "Fit size", Range = { 8, 120 }, Increment = 2,
     CurrentValue = 60, Callback = function(v) fit = v end })
+T:CreateSlider({ Name = "Cluster tightness (lower = smoother)", Range = { 0.4, 1.5 }, Increment = 0.1,
+    CurrentValue = 0.9, Callback = function(v) clusterAggr = v end })
 T:CreateSlider({ Name = "Plate thickness", Range = { 0.1, 1 }, Increment = 0.05,
     CurrentValue = 0.6, Callback = function(v) thick = v end })
 T:CreateSlider({ Name = "Height offset", Range = { -20, 20 }, Increment = 1,
@@ -536,7 +541,8 @@ T:CreateButton({ Name = "ANALYZE (solver plan)", Callback = function()
     if #objText < 10 then notify("OBJ", "Load a model first", 4) return end
     local ok, jobs, info = pcall(function()
         local j, meta = genJobs(objText, { fit = fit, budget = budget,
-            thick = thick, offsetY = offsetY, colorMode = colorMode })
+            thick = thick, offsetY = offsetY, colorMode = colorMode,
+            clusterAggr = clusterAggr })
         return j, meta
     end)
     if not ok then notify("Blocked", tostring(jobs), 8) return end
@@ -550,7 +556,8 @@ T:CreateButton({ Name = "BUILD FROM OBJ", Callback = function()
     if #objText < 10 then notify("OBJ", "Load a model first", 4) return end
     local ok, jobs = pcall(function()
         return (genJobs(objText, { fit = fit, budget = budget,
-            thick = thick, offsetY = offsetY, colorMode = colorMode }))
+            thick = thick, offsetY = offsetY, colorMode = colorMode,
+            clusterAggr = clusterAggr }))
     end)
     if not ok then notify("Blocked", tostring(jobs), 8) return end
     notify("OBJ build", #jobs .. " blocks | " .. fmtTime(#jobs * 0.12) .. " - stay on plot!", 8)
@@ -575,9 +582,9 @@ end })
 
 T:CreateSection("Info")
 T:CreateParagraph({ Title = "The contract", Content =
-"You set the BLOCK BUDGET (default 10000). The solver generates, MEASURES its own output, and re-solves until the real count fits - closed loop, up to 4 passes. Big triangles rasterize exactly, micro-triangles cluster. What you set is what you get." })
+"Budget is law: the solver builds, measures, re-solves until the real count fits. Rasterization threshold lowered 3x - most facets now build at true angles. Cluster tightness slider: lower = smoother curves. Use a decimated mesh (10-16k tris) for best results." })
 
-print("[Architect] v7.4 FINAL loaded - closed loop armed")
+print("[Architect] v7.5 FINAL loaded - clusters tamed")
 
 end)
 
