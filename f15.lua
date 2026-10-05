@@ -1,13 +1,14 @@
 -- ════════════════════════════════════════════════════════════
---  BABFT OBJ ARCHITECT v7.5 — FINAL TUNED EDITION
+--  BABFT OBJ ARCHITECT v8.0 — CONVEYOR EDITION (COMPLETE)
 --  ────────────────────────────────────────────────────────────
+--  • PER-BLOCK CONVEYOR: place -> anchor -> scale/teleport ->
+--    verify -> 0.01s cooldown. Every block staged before the
+--    next fires. No batches, no harvest races, no pileups.
 --  • CLOSED-LOOP budget solver: builds, measures, re-solves
 --    until the real count fits (<= 4 passes)
---  • Decimator Tier 2 with TUNABLE tightness (cluster slider)
---  • Lower rasterization threshold: more true-angle plates,
---    less averaged clustering = smoother builds
---  • Exact rasterization (barycentric cull) + dual-axis verify
---  • Burst engine, chunked paint, STOP, DeleteTool cleanup
+--  • Decimator Tier 2 with tunable cluster tightness
+--  • Lower rasterization threshold (true-angle plates)
+--  • Chunked paint, STOP, DeleteTool cleanup, respawn-safe
 -- ════════════════════════════════════════════════════════════
 
 local RUN_OK, RUN_ERR = pcall(function()
@@ -15,7 +16,7 @@ local RUN_OK, RUN_ERR = pcall(function()
 local Players = game:GetService("Players")
 local P = Players.LocalPlayer
 
-print("[v7.5] loading...")
+print("[v8.0] loading...")
 
 local CONFIG = {
     BlockIDs   = { WoodBlock = 450, TitaniumBlock = 12272 },
@@ -24,7 +25,8 @@ local CONFIG = {
     Stage      = Vector3.new(251.8, -11.9, -77.2),
     PaintChunk = 1000,
     ToolFloor  = 0.1,
-    ZeroStreakAbort = 3,
+    BlockCooldown = 0.01,  -- the proven server cooldown
+    PlaceTimeout  = 3,
 }
 
 local function firstOf(v) return typeof(v) == "table" and v[1] or v end
@@ -49,6 +51,25 @@ end
 
 local function alive(b) return typeof(b) == "Instance" and b.Parent ~= nil end
 
+-- ═══════════════════════ BUILD ENGINE (CONVEYOR) ════════════
+local function runBuild(jobs, opts, ui)
+    ui = ui or { log = print, status = function() end }
+    opts = opts or {}
+    STOP = false
+    BUILDING = true
+    local ok, err = pcall(function()
+        assert(#jobs > 0, "no jobs to build")
+        local zone = workspace:FindFirstChild(CONFIG.ZoneName)
+        assert(zone, "zone not found - stand on your plot")
+        local material = opts.material or "TitaniumBlock"
+        local ID = assert(CONFIG.BlockIDs[material], "unknown material: " .. tostring(material))
+        local verify = opts.verify ~= false
+
+        for _, n in ipairs({ "BuildingTool", "PaintingTool", "ScalingTool", "PropertiesTool" }) do
+            assert(tool(n), "missing tool: " .. n .. " - step off plot and back on")
+        end
+        ui.log("[engine] preflight ok - " .. #jobs .. " parts | conveyor mode")
+
         local bump = 0
         local built, fail = {}, {}
 
@@ -69,7 +90,7 @@ local function alive(b) return typeof(b) == "Instance" and b.Parent ~= nil end
                     end
                 end)
                 local t0 = os.clock()
-                while os.clock() - t0 < 3 do
+                while os.clock() - t0 < CONFIG.PlaceTimeout do
                     for c in pairs(snapSet()) do
                         if not before[c] then b = c break end
                     end
@@ -127,14 +148,14 @@ local function alive(b) return typeof(b) == "Instance" and b.Parent ~= nil end
                     fail[#fail + 1] = j.name
                 end
             end
-            task.wait(0.01) -- proven server cooldown, honored per block
+            task.wait(CONFIG.BlockCooldown)
         end
 
         ui.status("PAINT")
         local pl = {}
         for idx, j in ipairs(jobs) do
-            local b = built[idx]
-            if b and b.Parent then pl[#pl + 1] = { b, j.color } end
+            local bb = built[idx]
+            if bb and bb.Parent then pl[#pl + 1] = { bb, j.color } end
         end
         for s = 1, #pl, CONFIG.PaintChunk do
             local pb = {}
@@ -216,9 +237,7 @@ local function normalize(verts, fit)
     return nv
 end
 
--- ═══ CLOSED-LOOP BUDGET SOLVER + TUNED DECIMATOR (v7.5) ═════
--- Tier 1 threshold: cell^2 * 0.15 (3x wider door than v7.4)
--- Cluster neighborhood: cell * clusterAggr (default 0.9, tunable)
+-- ═══ CLOSED-LOOP BUDGET SOLVER + TUNED DECIMATOR (v8.0) ═════
 local function triPlates(verts, faces, opts)
     local nv = normalize(verts, opts.fit)
     local budget = opts.budget or 10000
@@ -419,7 +438,7 @@ getgenv().BABFT_CLEAN = cleanupAll
 getgenv().OBJ_BUILD = function(text, o)
     o = o or {}
     local jobs = genJobs(text, o)
-    return runBuild(jobs, { material = o.material, burst = o.burst, burstWait = o.burstWait })
+    return runBuild(jobs, { material = o.material })
 end
 
 -- ═══════════════════════ RAYFIELD UI ════════════════════════
@@ -427,7 +446,7 @@ local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Win = Rayfield:CreateWindow({
     Name = "BABFT OBJ Architect",
     LoadingTitle = "BABFT OBJ Architect",
-    LoadingSubtitle = "v7.5 FINAL | tuned clusters, closed loop",
+    LoadingSubtitle = "v8.0 CONVEYOR | 0.01s cooldown",
     ConfigurationSaving = { Enabled = false },
 })
 
@@ -472,7 +491,7 @@ end })
 
 T:CreateSection("2. Budget & shape")
 local budget, fit, thick, colorMode = 10000, 60, 0.6, "Shaded"
-local material, burst, burstWait, verifyOn = "TitaniumBlock", 20, 0.1, true
+local material, verifyOn = "TitaniumBlock", true
 local offsetY, clusterAggr = 0, 0.9
 T:CreateSlider({ Name = "BLOCK BUDGET (solver target)", Range = { 500, 12000 }, Increment = 500,
     CurrentValue = 10000, Callback = function(v) budget = v end })
@@ -488,10 +507,6 @@ T:CreateDropdown({ Name = "Color mode", Options = { "Shaded", "Height Fade", "Gr
     CurrentOption = "Shaded", Callback = function(v) colorMode = firstOf(v) end })
 T:CreateDropdown({ Name = "Material", Options = { "TitaniumBlock", "WoodBlock" },
     CurrentOption = "TitaniumBlock", Callback = function(v) material = firstOf(v) end })
-T:CreateSlider({ Name = "Burst size", Range = { 1, 40 }, Increment = 1,
-    CurrentValue = 20, Callback = function(v) burst = v end })
-T:CreateSlider({ Name = "Burst wait", Range = { 0.05, 1 }, Increment = 0.05,
-    CurrentValue = 0.1, Callback = function(v) burstWait = v end })
 T:CreateToggle({ Name = "Verify rotation (recommended)", CurrentValue = true,
     Callback = function(v) verifyOn = v end })
 
@@ -507,7 +522,7 @@ T:CreateButton({ Name = "ANALYZE (solver plan)", Callback = function()
     if not ok then notify("Blocked", tostring(jobs), 8) return end
     notify("Solver plan", string.format(
         "%d blocks (budget %d) | cell %.3f | %d tris | %d clustered | %s",
-        #jobs, budget, info.cellUsed, info.tris, info.clusters, fmtTime(#jobs * 0.12)), 10)
+        #jobs, budget, info.cellUsed, info.tris, info.clusters, fmtTime(#jobs * 0.04)), 10)
 end })
 
 T:CreateButton({ Name = "BUILD FROM OBJ", Callback = function()
@@ -519,10 +534,9 @@ T:CreateButton({ Name = "BUILD FROM OBJ", Callback = function()
             clusterAggr = clusterAggr }))
     end)
     if not ok then notify("Blocked", tostring(jobs), 8) return end
-    notify("OBJ build", #jobs .. " blocks | " .. fmtTime(#jobs * 0.12) .. " - stay on plot!", 8)
+    notify("OBJ build", #jobs .. " blocks | conveyor ~" .. fmtTime(#jobs * 0.04), 8)
     task.spawn(function()
-        local ok2, msg = runBuild(jobs, { material = material, burst = burst,
-            burstWait = burstWait, verify = verifyOn })
+        local ok2, msg = runBuild(jobs, { material = material, verify = verifyOn })
         notify("OBJ build", ok2 and tostring(msg) or ("Error: " .. tostring(msg)), 8)
     end)
 end })
@@ -540,10 +554,10 @@ T:CreateButton({ Name = "DELETE ALL MY BLOCKS", Callback = function()
 end })
 
 T:CreateSection("Info")
-T:CreateParagraph({ Title = "The contract", Content =
-"Budget is law: the solver builds, measures, re-solves until the real count fits. Rasterization threshold lowered 3x - most facets now build at true angles. Cluster tightness slider: lower = smoother curves. Use a decimated mesh (10-16k tris) for best results." })
+T:CreateParagraph({ Title = "Conveyor engine", Content =
+"Each block: placed, anchored, teleported to final position, verified - then the next. Honors the 0.01s server cooldown per block. No batches, no staging pileups. Budget is law: closed-loop solver guarantees the count." })
 
-print("[Architect] v7.5 FINAL loaded - clusters tamed")
+print("[Architect] v8.0 CONVEYOR loaded - all systems nominal")
 
 end)
 
