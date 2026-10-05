@@ -49,126 +49,85 @@ end
 
 local function alive(b) return typeof(b) == "Instance" and b.Parent ~= nil end
 
--- ═══════════════════════ BUILD ENGINE ═══════════════════════
-local function runBuild(jobs, opts, ui)
-    ui = ui or { log = print, status = function() end }
-    opts = opts or {}
-    STOP = false
-    BUILDING = true
-    local ok, err = pcall(function()
-        assert(#jobs > 0, "no jobs to build")
-        local zone = workspace:FindFirstChild(CONFIG.ZoneName)
-        assert(zone, "zone not found - stand on your plot")
-        local material = opts.material or "TitaniumBlock"
-        local ID = assert(CONFIG.BlockIDs[material], "unknown material: " .. tostring(material))
-        local BURST = opts.burst or 20
-        local BURST_WAIT = opts.burstWait or 0.1
-        local SCALE_WAIT = 0.08
-        local verify = opts.verify ~= false
-
-        for _, n in ipairs({ "BuildingTool", "PaintingTool", "ScalingTool", "PropertiesTool" }) do
-            assert(tool(n), "missing tool: " .. n .. " - step off plot and back on")
-        end
-        ui.log("[engine] preflight ok - " .. #jobs .. " parts | burst " .. BURST .. " per " .. BURST_WAIT .. "s")
-
-        local function firePlace(S)
-            pcall(function()
-                local t = tool("BuildingTool")
-                if t and t:FindFirstChild("RF") then
-                    t.RF:InvokeServer(material, ID, zone,
-                        CFrame.new(S.Z - zone.Position.Z, S.Y - zone.Position.Y, -(S.X - zone.Position.X)),
-                        true, CFrame.new(S) * CFrame.Angles(0, -math.pi / 2, 0), false, true)
-                end
-            end)
-        end
-
         local bump = 0
-        local zeroStreak = 0
         local built, fail = {}, {}
-        local i = 1
 
-        while i <= #jobs and not STOP do
-            local batch = math.min(BURST, #jobs - i + 1)
-            local before = snapSet()
+        for i, j in ipairs(jobs) do
+            if STOP then ui.log("[engine] STOPPED at " .. i) break end
+            ui.status(string.format("BUILD %d/%d", i, #jobs))
 
-            for k = 1, batch do
-                firePlace(CONFIG.Stage + Vector3.new((k - 1) * 4, bump, 0))
+            local b = nil
+            for attempt = 1, 2 do
+                local before = snapSet()
+                local S = CONFIG.Stage + Vector3.new(0, bump, 0)
+                pcall(function()
+                    local t = tool("BuildingTool")
+                    if t and t:FindFirstChild("RF") then
+                        t.RF:InvokeServer(material, ID, zone,
+                            CFrame.new(S.Z - zone.Position.Z, S.Y - zone.Position.Y, -(S.X - zone.Position.X)),
+                            true, CFrame.new(S) * CFrame.Angles(0, -math.pi / 2, 0), false, true)
+                    end
+                end)
+                local t0 = os.clock()
+                while os.clock() - t0 < 3 do
+                    for c in pairs(snapSet()) do
+                        if not before[c] then b = c break end
+                    end
+                    if b then break end
+                    task.wait(0.01)
+                end
+                if b then break end
+                bump = bump + 5
+                ui.log("[engine] place retry " .. attempt)
+                task.wait(0.05)
             end
-            task.wait(BURST_WAIT)
 
-            local got = {}
-            for c in pairs(snapSet()) do
-                if not before[c] then got[#got + 1] = c end
-            end
-            local n = math.min(#got, batch)
-
-            for k = 1, n do
-                local j = jobs[i + k - 1]
-                local b = got[k]
+            if not b then
+                fail[#fail + 1] = j.name
+                ui.log("[FAIL] place " .. j.name)
+            else
+                pcall(function()
+                    local t = tool("PropertiesTool")
+                    if t and t:FindFirstChild("SetPropertieRF") then
+                        t.SetPropertieRF:InvokeServer("Anchored", { b })
+                    end
+                end)
                 pcall(function()
                     local t = tool("ScalingTool")
                     if t and t:FindFirstChild("RF") then
                         t.RF:InvokeServer(b, j.size, j.cf)
                     end
                 end)
-                if k % 5 == 0 then task.wait(SCALE_WAIT) end
-            end
-            task.wait(BURST_WAIT)
+                if (b:GetPivot().Position - CONFIG.Stage).Magnitude < 3 then
+                    bump = bump + 5
+                end
 
-            local okCount = 0
-            for k = 1, n do
-                local j = jobs[i + k - 1]
-                local b = got[k]
-                if alive(b) then
-                    local posErr = (b:GetPivot().Position - j.cf.Position).Magnitude
-                    local rotOK = true
-                    if verify and j.lv then
-                        local lvA = math.abs(b:GetPivot().LookVector:Dot(j.cf.LookVector))
-                        local upA = math.abs(b:GetPivot().UpVector:Dot(j.cf.UpVector))
-                        rotOK = (lvA > 0.98) and (upA > 0.98)
-                        if not rotOK then
-                            pcall(function()
-                                local t = tool("TrowelTool")
-                                if t and t:FindFirstChild("OperationRF") then
-                                    t.OperationRF:InvokeServer({ b }, b:GetPivot(), j.cf, "Rotate")
-                                end
-                            end)
-                            task.wait(SCALE_WAIT)
-                            if alive(b) then
-                                lvA = math.abs(b:GetPivot().LookVector:Dot(j.cf.LookVector))
-                                rotOK = lvA > 0.98
+                local posErr = (b:GetPivot().Position - j.cf.Position).Magnitude
+                local rotOK = true
+                if verify and j.lv then
+                    local lvA = math.abs(b:GetPivot().LookVector:Dot(j.cf.LookVector))
+                    rotOK = lvA > 0.98
+                    if not rotOK then
+                        pcall(function()
+                            local t = tool("TrowelTool")
+                            if t and t:FindFirstChild("OperationRF") then
+                                t.OperationRF:InvokeServer({ b }, b:GetPivot(), j.cf, "Rotate")
                             end
+                        end)
+                        task.wait(0.02)
+                        if alive(b) then
+                            lvA = math.abs(b:GetPivot().LookVector:Dot(j.cf.LookVector))
+                            rotOK = lvA > 0.98
                         end
                     end
-                    if posErr < 1 and rotOK then
-                        built[i + k - 1] = b
-                        okCount = okCount + 1
-                    else
-                        fail[#fail + 1] = j.name
-                    end
+                end
+                if posErr < 1 and rotOK then
+                    built[i] = b
                 else
                     fail[#fail + 1] = j.name
                 end
             end
-
-            if okCount < n then
-                ui.log("[engine] batch issues: " .. (n - okCount) .. " failed verify")
-            end
-            ui.status(string.format("BUILD %d/%d", math.min(i + n - 1, #jobs), #jobs))
-
-            if n == 0 then
-                zeroStreak = zeroStreak + 1
-                ui.log("[engine] batch harvested 0 - cooldown " .. zeroStreak .. "/" .. CONFIG.ZeroStreakAbort)
-                task.wait(1)
-                if zeroStreak >= CONFIG.ZeroStreakAbort then
-                    error("server stopped accepting placements - wait a minute and retry")
-                end
-            else
-                zeroStreak = 0
-                if n < batch then ui.log("[engine] partial batch " .. n .. "/" .. batch) end
-                i = i + n
-            end
-            task.wait(0.1)
+            task.wait(0.01) -- proven server cooldown, honored per block
         end
 
         ui.status("PAINT")
